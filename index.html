@@ -106,7 +106,7 @@ button:disabled { opacity: .5; cursor: default; }
     <div>
       <label class="label" for="said">내가 말한 영어</label>
       <textarea id="said" placeholder="Type or speak your English here"></textarea>
-      <p class="tip" id="micTip">마이크 버튼을 누르고 영어로 말하면 글자로 바뀌고 바로 점검해요.</p>
+      <p class="tip" id="micTip">마이크 버튼을 누르고 영어로 말하면 바로 점검해요. 다시 누르면 처음부터 다시 말할 수 있어요.</p>
     </div>
     <div class="row">
       <button class="mic" id="mic" type="button">마이크로 말하기</button>
@@ -191,16 +191,41 @@ function next() {
   stats();
 }
 
-// Checking: compare the words with the answer sentence
-const norm = s => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[^a-z0-9' ]+/g, " ").split(/\s+/).filter(Boolean);
-const expand = w => w.flatMap(x => ({"i'm":["i","am"],"it's":["it","is"],"you're":["you","are"],"he's":["he","is"],"she's":["she","is"],"caillou's":["caillou","is"],"don't":["do","not"],"isn't":["is","not"],"let's":["let","us"],"what's":["what","is"],"that's":["that","is"],"i'll":["i","will"]})[x] || [x]);
+// Checking: forgiving word match so linked speech ("got up" → "gotup") and small slips still count
+const REDUCE = {"i'm":"i am","it's":"it is","you're":"you are","he's":"he is","she's":"she is","caillou's":"caillou is","don't":"do not","isn't":"is not","let's":"let us","what's":"what is","that's":"that is","i'll":"i will","there's":"there is","we're":"we are","they're":"they are","can't":"can not","cannot":"can not","didn't":"did not","doesn't":"does not","gonna":"going to","wanna":"want to","gotta":"got to","kinda":"kind of","gimme":"give me","lemme":"let me","'cause":"because","cuz":"because","ya":"you","mom":"mommy","mum":"mommy","mummy":"mommy","dad":"daddy","ok":"okay","im":"i am","dont":"do not","isnt":"is not","youre":"you are","thats":"that is","whats":"what is","didnt":"did not","cant":"can not","didja":"did you","didya":"did you","dija":"did you","whaddaya":"what do you","dunno":"do not know"};
+const ALIAS = {merry:"mary",marry:"mary",mari:"mary",kyle:"caillou",kylo:"caillou",kaiyu:"caillou",kayu:"caillou",kaio:"caillou",caio:"caillou",cailou:"caillou",kayo:"caillou",kailu:"caillou",kaylu:"caillou",callou:"caillou",cayou:"caillou",kyou:"caillou",colin:"colin",collin:"colin"};
+const norm = s => s.toLowerCase().replace(/[‘’]/g, "'").replace(/[^a-z0-9' ]+/g, " ").split(/\s+/).filter(Boolean)
+  .flatMap(w => (REDUCE[w] || w).split(" ")).map(w => ALIAS[w] || w.replace(/'/g, ""));
+function lev(a, b) {
+  const d = Array.from({length: b.length + 1}, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0]; d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const t = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = t;
+    }
+  }
+  return d[b.length];
+}
+function score(target, said) {
+  const t = norm(target), w = norm(said), joined = w.join("");
+  const near = x => w.some(y => lev(x, y) <= (x.length >= 6 ? 2 : x.length >= 3 ? 1 : 0));
+  const ok = t.map((x, i) => {
+    if (w.includes(x) || near(x)) return true;
+    if (x.length >= 3 && joined.includes(x)) return true;
+    // short words often merge with a neighbour: "a door" → "adoor"
+    return (i > 0 && joined.includes(t[i - 1] + x)) || (i < t.length - 1 && joined.includes(x + t[i + 1]));
+  });
+  const wordHit = ok.filter(Boolean).length / t.length;
+  const tj = t.join(""), charHit = tj.length ? 1 - lev(tj, joined) / Math.max(tj.length, joined.length) : 0;
+  return {hit: Math.max(wordHit, charHit), missing: [...new Set(t.filter((x, i) => !ok[i]))]};
+}
 function check() {
   const said = $("said").value.trim();
   if (!said) { $("said").focus(); return; }
-  const target = expand(norm(S[cur].en)), have = new Set(expand(norm(said)));
-  const missing = [...new Set(target.filter(x => !have.has(x)))];
-  const hit = 1 - target.filter(x => !have.has(x)).length / target.length;
-  const r = hit >= .9 ? {level: "good", verdict: "정답이에요!", text: "정답 문장과 거의 같아요."}
+  const {hit, missing} = score(S[cur].en, said);
+  const r = hit >= .85 ? {level: "good", verdict: "정답이에요!", text: "정답 문장과 거의 같아요."}
           : hit >= .6 ? {level: "mid", verdict: "거의 맞았어요", text: "빠진 단어를 확인해 보세요."}
           : {level: "bad", verdict: "다시 해 볼까요?", text: "정답 문장을 듣고 한 번 더 말해 보세요."};
   if (r.level === "good") good++;
@@ -223,27 +248,43 @@ function check() {
 
 // Microphone: browser speech recognition (Chrome, Edge, Safari)
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-let rec = null, listening = false;
+let rec = null, listening = false, restart = false;
 if (SR) {
   rec = new SR();
-  rec.lang = "en-US"; rec.interimResults = true; rec.maxAlternatives = 1;
+  rec.lang = "en-US"; rec.interimResults = true; rec.maxAlternatives = 5;
   rec.onresult = e => {
-    $("said").value = Array.from(e.results).map(r => r[0].transcript).join(" ");
-    if (e.results[e.results.length - 1].isFinal) { stopMic(); check(); }
+    // From each result, keep the alternative closest to the answer sentence
+    const target = S[cur].en;
+    const text = Array.from(e.results).map(r => {
+      let best = r[0].transcript, top = -1;
+      for (let i = 0; i < r.length; i++) {
+        const sc = score(target, r[i].transcript).hit;
+        if (sc > top) { top = sc; best = r[i].transcript; }
+      }
+      return best;
+    }).join(" ").trim();
+    $("said").value = text;
+    if (e.results[e.results.length - 1].isFinal) { restart = false; rec.stop(); check(); }
   };
   rec.onerror = e => {
-    stopMic();
+    if (e.error === "aborted") return;
     if (e.error === "not-allowed" || e.error === "service-not-allowed") $("micTip").textContent = "마이크 사용이 막혀 있어요. 브라우저 설정에서 이 사이트의 마이크를 허용해 주세요.";
     else if (e.error === "no-speech") $("micTip").textContent = "소리가 안 들렸어요. 다시 눌러서 말해 보세요.";
   };
-  rec.onend = stopMic;
+  rec.onend = () => { stopMic(); if (restart) { restart = false; startMic(); } };
+  // Every press starts over with an empty box
   $("mic").onclick = () => {
-    if (listening) { rec.stop(); return; }
-    try { rec.start(); listening = true; $("mic").classList.add("on"); $("mic").textContent = "듣는 중... (누르면 멈춤)"; } catch {}
+    $("said").value = "";
+    $("result").hidden = true;
+    if (listening) { restart = true; rec.abort(); return; }
+    startMic();
   };
 } else {
   $("mic").hidden = true;
   $("micTip").textContent = "이 브라우저는 마이크 인식을 지원하지 않아요. 키보드의 마이크 버튼으로 말하거나 직접 입력해 주세요.";
+}
+function startMic() {
+  try { rec.start(); listening = true; $("mic").classList.add("on"); $("mic").textContent = "듣는 중... (누르면 처음부터)"; } catch {}
 }
 function stopMic() { listening = false; $("mic").classList.remove("on"); $("mic").textContent = "마이크로 말하기"; }
 
