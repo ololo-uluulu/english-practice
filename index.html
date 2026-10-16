@@ -60,6 +60,9 @@ button:disabled { opacity: .5; cursor: default; }
 .answer { border-top: 1px dashed var(--line); padding-top: 14px; display: grid; gap: 10px; }
 .pr { font-family: var(--f-ko); font-size: 1.15rem; line-height: 2.1; }
 .pr rt { font-family: var(--f-ui); font-size: .7em; color: var(--accent); font-weight: 700; ruby-position: over; }
+.misses { color: var(--bad); margin-left: 6px; letter-spacing: 0; }
+.chip[data-id="review"] { border-color: var(--bad); color: var(--bad); }
+.chip[data-id="review"][aria-pressed="true"] { background: var(--bad-bg); }
 .legend { font-size: .78rem; color: var(--muted); }
 .legend b { color: var(--accent); }
 .small button { padding: 6px 14px; font-size: .88rem; }
@@ -98,9 +101,17 @@ button:disabled { opacity: .5; cursor: default; }
   <div class="chips" id="chips" role="group" aria-label="연습할 문장 고르기"></div>
   <div class="bar"><i id="bar"></i></div>
 
-  <section class="card">
+  <section class="card" id="noReview" hidden>
     <div>
-      <div class="label"><span class="tag" id="tag"></span> 이 뜻을 영어로 말해 보세요</div>
+      <div class="label">복습</div>
+      <p class="ko">지금은 복습할 문장이 없어요.</p>
+    </div>
+    <p class="muted">틀리거나 정답을 먼저 본 문장이 여기에 모여요. 두 번 연속으로 맞히면 복습에서 빠져요.</p>
+  </section>
+
+  <section class="card" id="practice">
+    <div>
+      <div class="label"><span class="tag" id="tag"></span> 이 뜻을 영어로 말해 보세요 <span class="misses" id="misses"></span></div>
       <p class="ko" id="ko"></p>
     </div>
     <div>
@@ -166,22 +177,56 @@ function stats() {
   $("sLeft").textContent = deck.length;
   $("bar").style.width = ((S.length - deck.length) / S.length * 100) + "%";
 }
+// Review: every sentence's record lives on this device; a missed sentence stays in review until it is right twice in a row
+const STATS_KEY = "practice-stats";
+let ST = {}, mode = "all", scored = false;
+try { ST = JSON.parse(localStorage.getItem(STATS_KEY) || "{}"); } catch {}
+const needsReview = en => { const r = ST[en]; return !!r && r.w > 0 && r.streak < 2; };
+function mark(ok) {
+  if (scored) return;
+  scored = true;
+  const en = S[cur].en, r = ST[en] || {w: 0, r: 0, streak: 0};
+  if (ok) { r.r++; r.streak++; } else { r.w++; r.streak = 0; }
+  ST[en] = r;
+  try { localStorage.setItem(STATS_KEY, JSON.stringify(ST)); } catch {}
+  reviewCount();
+}
+function reviewCount() {
+  const n = SETS.flatMap(x => x.sentences).filter(s => needsReview(s.en)).length;
+  const c = document.querySelector('.chip[data-id="review"]');
+  if (c) c.textContent = "복습" + (n ? " " + n : "");
+}
 function load(id) {
-  S = SETS.filter(x => id === "all" || x.id === id).flatMap(x => x.sentences.map(s => ({...s, set: x})));
+  mode = id;
+  const all = SETS.flatMap(x => x.sentences.map(s => ({...s, set: x})));
+  S = id === "review" ? all.filter(s => needsReview(s.en))
+    : all.filter(s => id === "all" || s.set.id === id);
   deck = []; good = 0;
   document.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c.dataset.id === id));
-  $("src").textContent = (id === "all" ? SETS.map(x => x.source).join(" · ") : SETS.find(x => x.id === id).source) + " · " + S.length + "문장";
+  $("src").textContent = (id === "review" ? "자주 틀린 문장 · 두 번 연속 맞히면 빠져요"
+    : id === "all" ? SETS.map(x => x.source).join(" · ") : SETS.find(x => x.id === id).source) + " · " + S.length + "문장";
   try { localStorage.setItem("pick", id); } catch {}
   next();
 }
 function next() {
-  if (!deck.length) { deck = shuffle(S.map((_, i) => i)); good = 0; }
+  const empty = !S.length;
+  $("practice").hidden = empty;
+  $("noReview").hidden = !empty;
+  if (empty) { $("sLeft").textContent = 0; $("bar").style.width = "0"; return; }
+  if (!deck.length) {
+    deck = shuffle(S.map((_, i) => i)); good = 0;
+    // in review, the most-missed sentences come first
+    if (mode === "review") deck.sort((a, b) => ST[S[a].en].w - ST[S[b].en].w);
+  }
   cur = deck.pop();
+  scored = false;
   const s = S[cur];
   $("ko").textContent = s.ko;
   $("en").textContent = s.en;
   renderPr($("pr"), s.pr);
   $("tag").textContent = s.set.name;
+  const r = ST[s.en];
+  $("misses").textContent = r && r.w ? "틀린 횟수 " + r.w : "";
   $("scene").hidden = !s.set.video;
   $("videoBox").hidden = true;
   if (player && player.pauseVideo) player.pauseVideo();
@@ -229,6 +274,7 @@ function check() {
           : hit >= .6 ? {level: "mid", verdict: "거의 맞았어요", text: "빠진 단어를 확인해 보세요."}
           : {level: "bad", verdict: "다시 해 볼까요?", text: "정답 문장을 듣고 한 번 더 말해 보세요."};
   if (r.level === "good") good++;
+  mark(r.level === "good");
   const box = $("result");
   box.className = "result " + r.level;
   box.replaceChildren();
@@ -352,10 +398,11 @@ $("scene").onclick = () => {
 };
 
 $("check").onclick = check;
-$("show").onclick = () => { $("answer").hidden = false; };
+// looking at the answer before getting it right counts as a miss
+$("show").onclick = () => { mark(false); $("answer").hidden = false; };
 $("next").onclick = next;
 $("said").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); check(); } });
-[{id: "all", name: "전체"}, ...SETS].forEach(x => {
+[{id: "all", name: "전체"}, {id: "review", name: "복습"}, ...SETS].forEach(x => {
   const b = document.createElement("button");
   b.className = "chip"; b.dataset.id = x.id; b.textContent = x.name; b.type = "button";
   b.onclick = () => load(x.id);
@@ -363,7 +410,8 @@ $("said").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKe
 });
 let saved = "all";
 try { saved = localStorage.getItem("pick") || "all"; } catch {}
-if (SETS.length) load(["all", ...SETS.map(x => x.id)].includes(saved) ? saved : "all");
+reviewCount();
+if (SETS.length) load(["all", "review", ...SETS.map(x => x.id)].includes(saved) ? saved : "all");
 </script>
 </body>
 </html>
