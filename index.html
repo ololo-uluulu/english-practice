@@ -58,6 +58,10 @@ button:disabled { opacity: .5; cursor: default; }
 .miss span { background: var(--card); border-radius: 4px; padding: 0 4px; margin-right: 4px; }
 .en { font-family: var(--f-en); font-size: 1.05rem; }
 .answer { border-top: 1px dashed var(--line); padding-top: 14px; display: grid; gap: 10px; }
+.pr { font-family: var(--f-ko); font-size: 1.15rem; line-height: 2.1; }
+.pr rt { font-family: var(--f-ui); font-size: .7em; color: var(--accent); font-weight: 700; ruby-position: over; }
+.legend { font-size: .78rem; color: var(--muted); }
+.legend b { color: var(--accent); }
 .small button { padding: 6px 14px; font-size: .88rem; }
 .video { position: relative; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; border-radius: 10px; overflow: hidden; background: #000; }
 .video > * { position: absolute; inset: 0; width: 100%; height: 100%; }
@@ -114,6 +118,8 @@ button:disabled { opacity: .5; cursor: default; }
     <div class="answer" id="answer" hidden>
       <div class="label">정답 문장</div>
       <div class="en" id="en"></div>
+      <div class="pr" id="pr"></div>
+      <div class="legend"><b>°</b> f·v &nbsp; <b>ˇ</b> r &nbsp; <b>~</b> th</div>
       <div class="row small" id="listen">
         <button type="button" id="say">영어 듣기</button>
         <button type="button" id="saySlow">천천히 듣기</button>
@@ -174,6 +180,7 @@ function next() {
   const s = S[cur];
   $("ko").textContent = s.ko;
   $("en").textContent = s.en;
+  renderPr($("pr"), s.pr);
   $("tag").textContent = s.set.name;
   $("scene").hidden = !s.set.video;
   $("videoBox").hidden = true;
@@ -239,6 +246,24 @@ if (SR) {
   $("micTip").textContent = "이 브라우저는 마이크 인식을 지원하지 않아요. 키보드의 마이크 버튼으로 말하거나 직접 입력해 주세요.";
 }
 function stopMic() { listening = false; $("mic").classList.remove("on"); $("mic").textContent = "마이크로 말하기"; }
+
+// Korean pronunciation with the book's marks: ° f/v, ˇ r, ~ th
+const MARK = {r: "ˇ", f: "°", v: "°", th: "~"};
+function renderPr(el, s) {
+  el.replaceChildren();
+  el.hidden = !s;
+  if (!s) return;
+  let i = 0;
+  for (const m of s.matchAll(/\[(th|r|f|v)([^\]]+)\]/g)) {
+    el.append(s.slice(i, m.index));
+    const rb = document.createElement("ruby"), rt = document.createElement("rt");
+    rt.textContent = MARK[m[1]];
+    rb.append(m[2], rt);
+    el.append(rb);
+    i = m.index + m[0].length;
+  }
+  el.append(s.slice(i));
+}
 
 // Listening: device voice
 const tts = window.speechSynthesis;
